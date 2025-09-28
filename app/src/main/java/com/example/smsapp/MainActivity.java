@@ -34,7 +34,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class MainActivity extends AppCompatActivity implements
-        ContactPickerDialog.ContactSelectedListener {
+
+        ContactPickerDialog.ContactSelectedListener ,  SmsContentObserver.SmsChangeListener {
 
     private static final int PERMISSION_REQUEST_CODE = 100;
 
@@ -56,6 +57,8 @@ public class MainActivity extends AppCompatActivity implements
     private List<SmsMessage> currentMessages;
     private List<Conversation> allConversations;
     private Conversation currentConversation;
+
+    private SmsContentObserver smsContentObserver;
 
 
     private void setupRefreshButton() {
@@ -97,6 +100,10 @@ public class MainActivity extends AppCompatActivity implements
             if ("NEW_SMS_RECEIVED".equals(intent.getAction())) {
                 String sender = intent.getStringExtra("sender");
                 String message = intent.getStringExtra("message");
+                long timestamp = intent.getLongExtra("timestamp", System.currentTimeMillis());
+
+                Log.d("MainActivity", "Auto-refresh triggered by new SMS from: " + sender);
+                refreshConversations();
 
                 // Normalize both numbers before comparison
                 String normalizedSender = normalizePhoneNumber(sender);
@@ -104,6 +111,8 @@ public class MainActivity extends AppCompatActivity implements
                         normalizePhoneNumber(currentConversation.getPhoneNumber()) : "";
 
                 if (currentConversation != null && normalizedSender.equals(normalizedCurrent)) {
+                    //refresh
+                    refreshConversations();
                     // Add to current conversation
                     SmsMessage newMessage = new SmsMessage(
                             currentConversation.getThreadId(), sender,
@@ -137,7 +146,59 @@ public class MainActivity extends AppCompatActivity implements
         initializeViews();
         checkPermissions();
         registerReceivers();
+        setupContentObserver();
         setupRefreshButton();
+    }
+
+    private void setupContentObserver() {
+        // Monitor SMS database for changes
+        Handler handler = new Handler();
+        smsContentObserver = new SmsContentObserver(handler, this);
+
+        // Register for SMS content changes
+        getContentResolver().registerContentObserver(
+                android.provider.Telephony.Sms.CONTENT_URI,
+                true, // Notify for descendants too
+                smsContentObserver
+        );
+
+        Log.d("MainActivity", "SMS content observer registered");
+    }
+    @Override
+    public void onSmsDatabaseChanged() {
+        Log.d("MainActivity", "SMS database changed - auto-refreshing");
+
+        // Use a small delay to ensure the database write is complete
+        new Handler().postDelayed(() -> {
+            runOnUiThread(() -> {
+                refreshConversations();
+
+                // If we're viewing a conversation, refresh it too
+                if (currentConversation != null) {
+                    refreshCurrentConversation();
+                }
+
+                Toast.makeText(this, "Messages updated", Toast.LENGTH_SHORT).show();
+            });
+        }, 500); // 500ms delay
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        // Unregister content observer
+        if (smsContentObserver != null) {
+            getContentResolver().unregisterContentObserver(smsContentObserver);
+        }
+        unregisterReceiver(smsReceiver);
+    }
+
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        // Refresh when app comes to foreground
+        refreshConversations();
     }
 
     private void initializeViews() {
@@ -404,9 +465,4 @@ public class MainActivity extends AppCompatActivity implements
         }
     }
 
-    @Override
-    protected void onDestroy() {
-        super.onDestroy();
-        unregisterReceiver(smsReceiver);
-    }
 }

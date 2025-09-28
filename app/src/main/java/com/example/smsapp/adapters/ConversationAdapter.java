@@ -1,6 +1,8 @@
 package com.example.smsapp.adapters;
 
 import android.graphics.Color;
+import android.text.method.LinkMovementMethod;
+import android.text.util.Linkify;
 import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -35,9 +37,13 @@ public class ConversationAdapter extends RecyclerView.Adapter<ConversationAdapte
         SmsMessage message = messages.get(position);
         holder.messageText.setText(message.getBody());
 
+        // Enable clickable links
+        holder.messageText.setMovementMethod(LinkMovementMethod.getInstance());
+
+        // Manually linkify the text (as backup)
+        Linkify.addLinks(holder.messageText, Linkify.WEB_URLS | Linkify.EMAIL_ADDRESSES | Linkify.PHONE_NUMBERS);
+
         // Clear previous backgrounds and layouts
-        holder.messageText.setBackgroundResource(0);
-        holder.messageLayout.setGravity(0);
 
         // Set background and alignment based on message type
         if (message.isSent()) {
@@ -76,11 +82,10 @@ public class ConversationAdapter extends RecyclerView.Adapter<ConversationAdapte
             messageLayout = view.findViewById(R.id.message_layout);
             messageText = view.findViewById(R.id.message_text);
 
-            if (messageLayout == null) {
-                Log.e("ConversationAdapter", "message_layout not found in layout");
-            }
-            if (messageText == null) {
-                Log.e("ConversationAdapter", "message_text not found in layout");
+            // Ensure text view can handle links
+            if (messageText != null) {
+                messageText.setMovementMethod(LinkMovementMethod.getInstance());
+                messageText.setLinksClickable(true);
             }
         }
     }
