@@ -8,6 +8,7 @@ import android.telephony.SmsMessage;
 import android.util.Log;
 import android.widget.Toast;
 
+import com.example.smsapp.utils.PhishingDetector;
 import com.example.smsapp.utils.SmsHelper;
 
 public class SmsReceiver extends BroadcastReceiver {
@@ -40,6 +41,7 @@ public class SmsReceiver extends BroadcastReceiver {
 
             for (Object pdu : pdus) {
                 try {
+                    // Use the fully qualified class name to avoid confusion
                     SmsMessage sms = SmsMessage.createFromPdu((byte[]) pdu);
                     if (sender == null) {
                         sender = sms.getDisplayOriginatingAddress();
@@ -54,31 +56,69 @@ public class SmsReceiver extends BroadcastReceiver {
             }
 
             if (sender != null) {
-                Log.d(TAG, "SMS from: " + sender + ", Body: " + messageBody.toString());
+                final String finalSender = sender;
+                final String finalMessageBody = messageBody.toString();
+
+                Log.d(TAG, "SMS from: " + finalSender + ", Body: " + finalMessageBody);
 
                 // Show toast for visual confirmation
-                Toast.makeText(context, "SMS received from: " + sender, Toast.LENGTH_LONG).show();
+                Toast.makeText(context, "SMS received from: " + finalSender, Toast.LENGTH_LONG).show();
 
-                // Add to system database
-                Log.d("SMS_FLOW", "Adding to database: " + sender + " - " + messageBody);
-                SmsHelper.addMessageToSystemDatabase(context, sender, messageBody.toString(), false);
-                Log.d("SMS_FLOW", "Database add completed");
+                // Check for phishing
+                Log.d("SMS_FLOW", "Starting phishing detection");
+                PhishingDetector.checkMessage(finalMessageBody, new PhishingDetector.PhishingDetectionCallback() {
+                    @Override
+                    public void onDetectionResult(boolean isPhishing, double confidence) {
+                        Log.d("SMS_FLOW", "Phishing detection result: " + isPhishing + " (" + confidence + ")");
 
-                // Send broadcast to update MainActivity
-                Log.d("SMS_FLOW", "Sending broadcast to MainActivity");
-                sendRefreshBroadcast(context, sender, messageBody.toString());
+                        // Add to system database
+                        Log.d("SMS_FLOW", "Adding to database: " + finalSender + " - " + finalMessageBody);
+                        SmsHelper.addMessageToSystemDatabase(context, finalSender, finalMessageBody, false);
+                        Log.d("SMS_FLOW", "Database add completed");
 
-                Log.d(TAG, "SMS processed successfully");
+                        // Send broadcast to update MainActivity with phishing info
+                        Log.d("SMS_FLOW", "Sending broadcast to MainActivity");
+                        sendRefreshBroadcast(context, finalSender, finalMessageBody, isPhishing, confidence);
+
+                        // Show warning for phishing messages
+                        if (isPhishing) {
+                            String warning = "⚠️ Potential phishing detected! (" +
+                                    String.format("%.0f%%", confidence * 100) + " confidence)";
+                            Toast.makeText(context, warning, Toast.LENGTH_LONG).show();
+                            Log.w(TAG, "PHISHING DETECTED: " + warning);
+                        }
+
+                        Log.d(TAG, "SMS processed successfully - Phishing: " + isPhishing);
+                    }
+
+                    @Override
+                    public void onDetectionError(String error) {
+                        Log.e("SMS_FLOW", "Phishing detection error: " + error);
+
+                        // Add to system database
+                        Log.d("SMS_FLOW", "Adding to database (fallback): " + finalSender);
+                        SmsHelper.addMessageToSystemDatabase(context, finalSender, finalMessageBody, false);
+                        Log.d("SMS_FLOW", "Database add completed");
+
+                        // Send broadcast to update MainActivity
+                        Log.d("SMS_FLOW", "Sending broadcast to MainActivity (fallback)");
+                        sendRefreshBroadcast(context, finalSender, finalMessageBody, false, 0.0);
+
+                        Log.d(TAG, "SMS processed with detection error: " + error);
+                    }
+                });
             }
         }
     }
 
-    private void sendRefreshBroadcast(Context context, String sender, String message) {
+    private void sendRefreshBroadcast(Context context, String sender, String message, boolean isPhishing, double confidence) {
         Intent refreshIntent = new Intent("NEW_SMS_RECEIVED");
         refreshIntent.putExtra("sender", sender);
         refreshIntent.putExtra("message", message);
         refreshIntent.putExtra("timestamp", System.currentTimeMillis());
+        refreshIntent.putExtra("isPhishing", isPhishing);
+        refreshIntent.putExtra("phishingConfidence", confidence);
         context.sendBroadcast(refreshIntent);
-        Log.d(TAG, "Refresh broadcast sent for: " + sender);
+        Log.d(TAG, "Refresh broadcast sent for: " + sender + " - Phishing: " + isPhishing);
     }
 }

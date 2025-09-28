@@ -1,16 +1,16 @@
 package com.example.smsapp;
 
+import static com.google.android.material.color.utilities.MaterialDynamicColors.error;
+
 import android.Manifest;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager;
-import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
-import android.provider.Telephony;
 import android.util.Log;
 import android.view.View;
 import android.widget.EditText;
@@ -28,14 +28,12 @@ import com.example.smsapp.adapters.ConversationListAdapter;
 import com.example.smsapp.dialogs.ContactPickerDialog;
 import com.example.smsapp.models.Conversation;
 import com.example.smsapp.models.SmsMessage;
-import com.example.smsapp.utils.ContactUtils;
+import com.example.smsapp.utils.PhishingDetector;
 import com.example.smsapp.utils.SmsHelper;
 import java.util.ArrayList;
 import java.util.List;
 
-public class MainActivity extends AppCompatActivity implements
-
-        ContactPickerDialog.ContactSelectedListener ,  SmsContentObserver.SmsChangeListener {
+public class MainActivity extends AppCompatActivity implements ContactPickerDialog.ContactSelectedListener {
 
     private static final int PERMISSION_REQUEST_CODE = 100;
 
@@ -58,8 +56,25 @@ public class MainActivity extends AppCompatActivity implements
     private List<Conversation> allConversations;
     private Conversation currentConversation;
 
-    private SmsContentObserver smsContentObserver;
+    private void testPhishingDetection() {
+        // When you want to check a message
+        PhishingDetector.checkMessage("URGENT: Your account will be suspended",
+                new PhishingDetector.PhishingDetectionCallback() {
+                    @Override
+                    public void onDetectionResult(boolean isPhishing, double confidence) {
+                        if (isPhishing) {
+                            // Show warning to user
+                            Toast.makeText(MainActivity.this,
+                                    "Potential phishing detected!", Toast.LENGTH_LONG).show();
+                        }
+                    }
 
+                    @Override
+                    public void onDetectionError(String error) {
+                        Log.e("MainActivity", "Detection failed: " + error);
+                    }
+                });
+    }
 
     private void setupRefreshButton() {
         ImageButton refreshButton = findViewById(R.id.refresh_button);
@@ -94,13 +109,15 @@ public class MainActivity extends AppCompatActivity implements
     }
 
     // Broadcast receiver for new messages
-    private BroadcastReceiver smsReceiver = new BroadcastReceiver() {
+    private final BroadcastReceiver smsReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
             if ("NEW_SMS_RECEIVED".equals(intent.getAction())) {
                 String sender = intent.getStringExtra("sender");
                 String message = intent.getStringExtra("message");
                 long timestamp = intent.getLongExtra("timestamp", System.currentTimeMillis());
+                boolean isPhishing = intent.getBooleanExtra("isPhishing", false);
+                double phishingConfidence = intent.getDoubleExtra("phishingConfidence", 0.0);
 
                 Log.d("MainActivity", "Auto-refresh triggered by new SMS from: " + sender);
                 refreshConversations();
@@ -119,25 +136,37 @@ public class MainActivity extends AppCompatActivity implements
                             currentConversation.getContactName(), message,
                             System.currentTimeMillis(), false, true
                     );
+                    newMessage.setPhishing(isPhishing);
+                    newMessage.setPhishingConfidence(phishingConfidence);
 
                     currentMessages.add(newMessage);
                     conversationAdapter.updateMessages(currentMessages);
                     conversationRecyclerView.scrollToPosition(currentMessages.size() - 1);
 
-                    Log.d("SMS_FLOW", "Message added to current conversation");
-                    Toast.makeText(MainActivity.this, "New message received!", Toast.LENGTH_SHORT).show();
+                    Log.d("SMS_FLOW", "Message added to current conversation - Phishing: " + isPhishing);
+
+                    // Show phishing warning if detected
+                    if (isPhishing) {
+                        String warning = "⚠️ Potential phishing detected! (" +
+                                String.format("%.0f%%", phishingConfidence * 100) + " confidence)";
+                        Toast.makeText(MainActivity.this, warning, Toast.LENGTH_LONG).show();
+                    } else {
+                        Toast.makeText(MainActivity.this, "New message received!", Toast.LENGTH_SHORT).show();
+                    }
                 }
 
                 refreshConversations();
             }
         }
     };
+
     private void registerReceivers() {
         IntentFilter filter = new IntentFilter();
         filter.addAction("NEW_SMS_RECEIVED");
         filter.addAction("REFRESH_CONVERSATIONS");
         registerReceiver(smsReceiver, filter);
     }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -146,53 +175,18 @@ public class MainActivity extends AppCompatActivity implements
         initializeViews();
         checkPermissions();
         registerReceivers();
-        setupContentObserver();
         setupRefreshButton();
-    }
 
-    private void setupContentObserver() {
-        // Monitor SMS database for changes
-        Handler handler = new Handler();
-        smsContentObserver = new SmsContentObserver(handler, this);
-
-        // Register for SMS content changes
-        getContentResolver().registerContentObserver(
-                android.provider.Telephony.Sms.CONTENT_URI,
-                true, // Notify for descendants too
-                smsContentObserver
-        );
-
-        Log.d("MainActivity", "SMS content observer registered");
-    }
-    @Override
-    public void onSmsDatabaseChanged() {
-        Log.d("MainActivity", "SMS database changed - auto-refreshing");
-
-        // Use a small delay to ensure the database write is complete
-        new Handler().postDelayed(() -> {
-            runOnUiThread(() -> {
-                refreshConversations();
-
-                // If we're viewing a conversation, refresh it too
-                if (currentConversation != null) {
-                    refreshCurrentConversation();
-                }
-
-                Toast.makeText(this, "Messages updated", Toast.LENGTH_SHORT).show();
-            });
-        }, 500); // 500ms delay
+        // Test phishing detection (optional - remove if not needed)
+        // testPhishingDetection();
     }
 
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        // Unregister content observer
-        if (smsContentObserver != null) {
-            getContentResolver().unregisterContentObserver(smsContentObserver);
-        }
+        // Unregister broadcast receiver
         unregisterReceiver(smsReceiver);
     }
-
 
     @Override
     protected void onResume() {
@@ -219,18 +213,58 @@ public class MainActivity extends AppCompatActivity implements
 
         // Setup message conversation
         currentMessages = new ArrayList<>();
-        conversationAdapter = new ConversationAdapter(currentMessages);
+        conversationAdapter = new ConversationAdapter(currentMessages, new ConversationAdapter.OnPhishingRecheckListener() {
+            @Override
+            public void onPhishingRecheck(SmsMessage message, int position) {
+                recheckPhishingDetection(message, position);
+            }
+        });
         conversationRecyclerView.setLayoutManager(new LinearLayoutManager(this));
         conversationRecyclerView.setAdapter(conversationAdapter);
 
         sendButton.setOnClickListener(v -> sendMessage());
         contactPickerButton.setOnClickListener(v -> showContactPicker());
-
     }
 
+    // Add this method to MainActivity:
+    private void recheckPhishingDetection(SmsMessage message, int position) {
+        // Show loading state
+        Toast.makeText(this, "Rechecking for phishing...", Toast.LENGTH_SHORT).show();
 
+        PhishingDetector.checkMessage(message.getBody(), new PhishingDetector.PhishingDetectionCallback() {
+            @Override
+            public void onDetectionResult(boolean isPhishing, double confidence) {
+                runOnUiThread(() -> {
+                    // Update the message with new phishing data
+                    message.setPhishing(isPhishing);
+                    message.setPhishingConfidence(confidence);
 
-    // ADD THIS METHOD - It was missing!
+                    // Update the adapter
+                    conversationAdapter.updateMessage(position, message);
+
+                    // Show result
+                    if (isPhishing) {
+                        String result = "⚠️ Still phishing! (" +
+                                String.format("%.0f%%", confidence * 100) + " confidence)";
+                        Toast.makeText(MainActivity.this, result, Toast.LENGTH_LONG).show();
+                    } else {
+                        Toast.makeText(MainActivity.this, "✅ Message appears safe now", Toast.LENGTH_LONG).show();
+                    }
+
+                    Log.d("MainActivity", "Recheck completed - Phishing: " + isPhishing + " (" + confidence + ")");
+                });
+            }
+
+            @Override
+            public void onDetectionError(String error) {
+                runOnUiThread(() -> {
+                    Toast.makeText(MainActivity.this, "Recheck failed: " + error, Toast.LENGTH_SHORT).show();
+                    Log.e("MainActivity", "Phishing recheck error: " + error);
+                });
+            }
+        });
+    }
+
     private void showContactPicker() {
         // Check if we have contact permissions
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS)
@@ -243,8 +277,6 @@ public class MainActivity extends AppCompatActivity implements
         ContactPickerDialog dialog = ContactPickerDialog.newInstance();
         dialog.show(getSupportFragmentManager(), "contact_picker");
     }
-
-
 
     private void refreshConversations() {
         Log.d("MainActivity", "Refreshing conversations...");
@@ -285,6 +317,7 @@ public class MainActivity extends AppCompatActivity implements
             }
         }).start();
     }
+
     private void refreshCurrentConversation() {
         if (currentConversation != null) {
             new Thread(() -> {
@@ -294,7 +327,7 @@ public class MainActivity extends AppCompatActivity implements
                 new Handler(Looper.getMainLooper()).post(() -> {
                     // Use updateMessages instead of clearing and notifying separately
                     conversationAdapter.updateMessages(messages);
-                    if (!currentMessages.isEmpty()) {
+                    if (!messages.isEmpty()) {
                         conversationRecyclerView.scrollToPosition(messages.size() - 1);
                     }
                 });
@@ -357,6 +390,7 @@ public class MainActivity extends AppCompatActivity implements
                         true,  // isSent
                         true   // isRead
                 );
+                tempMessage.setType(1); // Sent message
 
                 // Add to UI immediately (optimistic update)
                 currentMessages.add(tempMessage);
@@ -409,12 +443,6 @@ public class MainActivity extends AppCompatActivity implements
         currentContactView.setText("Conversations");
     }
 
-
-
-
-
-
-
     @Override
     public void onBackPressed() {
         if (conversationView.getVisibility() == View.VISIBLE) {
@@ -464,5 +492,4 @@ public class MainActivity extends AppCompatActivity implements
             }
         }
     }
-
 }
